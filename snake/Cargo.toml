@@ -1,0 +1,9 @@
+[package]
+name = "snake"                                 # the name of the package
+version = "0.1.0"                              # the current version, obeying semver
+authors = ["Zifan Hua <zifan.hua@icloud.com>"]
+edition = "2021"
+
+[dependencies]
+crossterm = { version = "0.26.1", features = ["serde"] }
+rand = "0.8.5"
