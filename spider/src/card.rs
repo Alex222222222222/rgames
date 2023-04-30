@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use crossterm::style::Color;
+use tui::style::Color;
 use tui::layout::Rect;
 
 #[derive(Debug, Clone, Copy)]
@@ -143,10 +143,10 @@ impl Display for Card {
 impl Suit {
     pub fn color(&self) -> Color {
         match self {
-            Suit::Clubs => Color::Black,
+            Suit::Clubs => Color::Green,
             Suit::Diamonds => Color::Red,
             Suit::Hearts => Color::Red,
-            Suit::Spades => Color::Black,
+            Suit::Spades => Color::Green,
         }
     }
 }

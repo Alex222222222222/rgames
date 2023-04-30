@@ -1,5 +1,5 @@
 use std::{
-    io::{self, stdout, Stdout, Write},
+    io::{self, Stdout},
     sync::Mutex,
 };
 
@@ -35,7 +35,11 @@ fn main() -> Result<(), io::Error> {
     let game_suit = ask_for_game_suit_loop()?;
 
     if let Some(game_suit) = game_suit {
-        let game = Game::new(game_suit);
+        let mut game = Game::new(game_suit);
+        let res = game.run_game();
+        if let Err(err) = res {
+            println!("{}", err)
+        }
     }
 
     // restore terminal
