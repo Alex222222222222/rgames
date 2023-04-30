@@ -1,6 +1,7 @@
 use std::fmt::Display;
 
 use crossterm::style::Color;
+use tui::layout::Rect;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Card {
@@ -12,6 +13,10 @@ pub struct Card {
 pub struct GameCard {
     pub card: Card,
     pub is_up: bool,
+    /// should initialised at first render
+    ///
+    /// used to decide whether the card has been clicked
+    pub pos: Option<Rect>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +131,12 @@ impl Display for Suit {
             Suit::Hearts => write!(f, "♥"),
             Suit::Spades => write!(f, "♠"),
         }
+    }
+}
+
+impl Display for Card {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.rank, self.suit)
     }
 }
 

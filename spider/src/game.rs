@@ -1,6 +1,15 @@
-use rand::Rng;
+use std::io;
 
-use crate::card::{self, Card, GameCard, GameSuitNumber, Rank, Suit};
+use rand::Rng;
+use tui::{
+    layout::{Constraint, Layout, Rect},
+    widgets::{Block, Borders},
+};
+
+use crate::{
+    card::{Card, GameCard, GameSuitNumber, Rank, Suit},
+    TERMINAL,
+};
 
 #[derive(Debug)]
 pub struct Game {
@@ -22,6 +31,11 @@ pub struct Game {
     pub game_suit: GameSuitNumber,
     /// history moves
     pub history_moves: Vec<GameMove>,
+    /// the ui pos of the stock,
+    /// should be initialised after first render
+    ///
+    /// used to decided wether the stock has been clicked
+    pub stock_ui_pos: Option<Rect>,
 }
 
 /// The position of a card in the game
@@ -71,6 +85,201 @@ pub enum MoveError {
 }
 
 impl Game {
+    /// Render the game ui
+    fn render_all(&mut self) -> io::Result<()> {
+        let mut terminal = TERMINAL.lock().unwrap();
+
+        let mut stock_chunks = Vec::new();
+        let mut tableau_chunks = Vec::new();
+
+        terminal.draw(|f| {
+            let size = f.size();
+
+            let outer_block = Block::default().title("Spider").borders(Borders::ALL);
+            let new_size = outer_block.inner(size);
+            f.render_widget(outer_block, size);
+            let size = new_size;
+
+            let stock_tableau_chunks = Layout::default()
+                .direction(tui::layout::Direction::Vertical)
+                .margin(1)
+                .constraints([Constraint::Length(10), Constraint::Length(50)].as_ref())
+                .split(size);
+
+            stock_chunks = Layout::default()
+                .direction(tui::layout::Direction::Horizontal)
+                .margin(1)
+                .constraints([Constraint::Length(24), Constraint::Length(10)].as_ref())
+                .split(stock_tableau_chunks[0]);
+
+            let mut tableau_constraint = Vec::new();
+            for _ in 0..10 {
+                tableau_constraint.push(Constraint::Length(10));
+            }
+            tableau_chunks = Layout::default()
+                .direction(tui::layout::Direction::Horizontal)
+                .margin(1)
+                .constraints(tableau_constraint.as_ref())
+                .split(stock_tableau_chunks[1]);
+        })?;
+        drop(terminal);
+
+        self.render_left_stock(stock_chunks[1])?;
+        self.render_visible_stock(stock_chunks[0])?;
+        #[allow(clippy::needless_range_loop)]
+        for i in 0..10 {
+            self.render_pile(i, tableau_chunks[i])?;
+        }
+
+        Ok(())
+    }
+
+    fn render_pile(&mut self, pile: usize, area: Rect) -> io::Result<()> {
+        let mut terminal = TERMINAL.lock().unwrap();
+
+        let pile = self.tableau.get_mut(pile).unwrap();
+
+        let n = pile.len();
+
+        if n == 0 {
+            let area = Rect::new(area.x, area.y, 8, 8);
+            let card_block = Block::default().title("Empty").borders(Borders::ALL);
+
+            terminal.draw(|f| {
+                f.render_widget(card_block, area);
+            })?;
+
+            return Ok(());
+        }
+
+        let mut area = Rect::new(area.x, area.y + (2 * (n - 1)) as u16, 8, 8);
+        for i in 0..n {
+            let card = n - i - 1;
+            let card = pile.get_mut(card);
+            if card.is_none() {
+                continue;
+            }
+            let card = card.unwrap();
+
+            let title = if card.is_up {
+                card.card.to_string()
+            } else {
+                String::from("")
+            };
+
+            let card_block = if i == 0 {
+                Block::default().title(title).borders(Borders::ALL)
+            } else {
+                Block::default()
+                    .title(title)
+                    .borders(Borders::LEFT)
+                    .borders(Borders::RIGHT)
+                    .borders(Borders::TOP)
+            };
+
+            terminal.draw(|f| {
+                f.render_widget(card_block, area);
+            })?;
+
+            if i == 0 {
+                area.height = 2;
+            }
+            area.y -= 2;
+        }
+
+        Ok(())
+    }
+
+    fn render_visible_stock(&mut self, area: Rect) -> io::Result<()> {
+        let mut terminal = TERMINAL.lock().unwrap();
+
+        let mut n = self.current_stock_pos;
+        if n > 4 {
+            n = 4;
+        }
+
+        let mut area = Rect::new(area.x + area.width - 10, area.y, 8, 8);
+
+        for i in 0..n {
+            let card = n - i - 1;
+            let card = self.stock.get_mut(card);
+            if card.is_none() {
+                continue;
+            }
+            let card = card.unwrap();
+
+            if i == 0 {
+                card.pos = Some(area);
+            }
+
+            let card_block = if i == 0 {
+                Block::default()
+                    .title(card.card.to_string())
+                    .borders(Borders::all())
+            } else {
+                Block::default()
+                    .title(card.card.to_string())
+                    .borders(Borders::TOP)
+                    .borders(Borders::BOTTOM)
+                    .borders(Borders::LEFT)
+            };
+
+            terminal.draw(|f| f.render_widget(card_block, area))?;
+
+            if i == 0 {
+                area.width = 6;
+            }
+            area.x -= 6;
+        }
+
+        let card_block = Block::default()
+            .title(format!("{}", self.current_stock_pos - n))
+            .borders(Borders::TOP)
+            .borders(Borders::BOTTOM)
+            .borders(Borders::LEFT);
+        terminal.draw(|f| f.render_widget(card_block, area))?;
+
+        Ok(())
+    }
+
+    fn render_left_stock(&mut self, area: Rect) -> io::Result<()> {
+        let mut terminal = TERMINAL.lock().unwrap();
+        let mut area = area;
+        if area.height > 8 {
+            area.height = 8;
+        }
+        if area.width > 8 {
+            area.width = 8;
+        }
+
+        terminal.draw(|f| {
+            let stock_block = Block::default().title("Stock").borders(Borders::ALL);
+            let inner = stock_block.inner(area);
+            let chunks = Layout::default()
+                .direction(tui::layout::Direction::Vertical)
+                .constraints(
+                    [
+                        Constraint::Percentage(25),
+                        Constraint::Percentage(50),
+                        Constraint::Percentage(25),
+                    ]
+                    .as_ref(),
+                )
+                .margin(0)
+                .split(inner);
+            let left_block = Block::default()
+                .title(format!("{}", self.stock.len() - self.current_stock_pos))
+                .borders(Borders::empty());
+
+            f.render_widget(stock_block, area);
+            f.render_widget(left_block, chunks[1]);
+        })?;
+
+        self.stock_ui_pos = Some(area);
+
+        Ok(())
+    }
+
     /// do a move
     pub fn do_move(&mut self, game_move: GameMove) -> Result<(), MoveError> {
         match game_move {
@@ -78,28 +287,6 @@ impl Game {
             GameMove::RecycleStock => self.do_move_recycle_stock(),
             GameMove::MoveCard { src, dst } => self.do_move_card(src, dst),
         }
-    }
-
-    /// draw one card from stock
-    fn do_move_draw_stock(&mut self) -> Result<(), MoveError> {
-        if self.current_stock_pos >= self.stock.len() {
-            return Err(MoveError::DrawEmptyStock);
-        }
-
-        self.current_stock_pos += 1;
-
-        Ok(())
-    }
-
-    /// recycle the stock
-    fn do_move_recycle_stock(&mut self) -> Result<(), MoveError> {
-        if self.current_stock_pos < self.stock.len() {
-            return Err(MoveError::RecycleNoneEmptyStock);
-        }
-
-        self.current_stock_pos = 0;
-
-        Ok(())
     }
 
     /// move a card
@@ -262,6 +449,44 @@ impl Game {
             src_pile.pop();
         }
 
+        // auto turn the last card to up
+        let last = src_pile.last_mut();
+        if let Some(last) = last {
+            last.is_up = true;
+        }
+
+        Ok(())
+    }
+
+    /// draw one card from stock
+    fn do_move_draw_stock(&mut self) -> Result<(), MoveError> {
+        if self.current_stock_pos >= self.stock.len() {
+            return Err(MoveError::DrawEmptyStock);
+        }
+
+        let c = self.stock.get_mut(self.current_stock_pos - 1);
+        if let Some(c) = c {
+            c.pos = None;
+        }
+
+        self.current_stock_pos += 1;
+
+        Ok(())
+    }
+
+    /// recycle the stock
+    fn do_move_recycle_stock(&mut self) -> Result<(), MoveError> {
+        if self.current_stock_pos < self.stock.len() {
+            return Err(MoveError::RecycleNoneEmptyStock);
+        }
+
+        let c = self.stock.get_mut(self.current_stock_pos - 1);
+        if let Some(c) = c {
+            c.pos = None;
+        }
+
+        self.current_stock_pos = 0;
+
         Ok(())
     }
 
@@ -277,6 +502,7 @@ impl Game {
                     rank: Rank::from(i),
                 },
                 is_up: false,
+                pos: None,
             });
             all_cards.push(GameCard {
                 card: Card {
@@ -284,6 +510,7 @@ impl Game {
                     rank: Rank::from(i),
                 },
                 is_up: false,
+                pos: None,
             });
         }
         for i in 1..14 {
@@ -293,6 +520,7 @@ impl Game {
                     rank: Rank::from(i),
                 },
                 is_up: false,
+                pos: None,
             });
             all_cards.push(GameCard {
                 card: Card {
@@ -300,6 +528,7 @@ impl Game {
                     rank: Rank::from(i),
                 },
                 is_up: false,
+                pos: None,
             });
         }
         for i in 1..14 {
@@ -309,6 +538,7 @@ impl Game {
                     rank: Rank::from(i),
                 },
                 is_up: false,
+                pos: None,
             });
             all_cards.push(GameCard {
                 card: Card {
@@ -316,6 +546,7 @@ impl Game {
                     rank: Rank::from(i),
                 },
                 is_up: false,
+                pos: None,
             });
         }
         for i in 1..14 {
@@ -325,6 +556,7 @@ impl Game {
                     rank: Rank::from(i),
                 },
                 is_up: false,
+                pos: None,
             });
             all_cards.push(GameCard {
                 card: Card {
@@ -332,6 +564,7 @@ impl Game {
                     rank: Rank::from(i),
                 },
                 is_up: false,
+                pos: None,
             });
         }
 
@@ -380,6 +613,7 @@ impl Game {
             score: 0,
             game_suit,
             history_moves: Vec::new(),
+            stock_ui_pos: None,
         }
     }
 }
