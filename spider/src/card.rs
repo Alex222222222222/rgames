@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
-use tui::style::Color;
 use tui::layout::Rect;
+use tui::style::Color;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Card {
@@ -85,7 +85,7 @@ impl From<Rank> for u8 {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub enum GameSuitNumber {
     One,
     #[default]

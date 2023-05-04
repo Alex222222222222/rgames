@@ -105,7 +105,60 @@ fn test_point_in_rect(x: u16, y: u16, rect: Rect) -> bool {
     x >= rect.x && y >= rect.y && x < rect.x + rect.width && y < rect.y + rect.height
 }
 
+/// verity a card could go under another card
+fn verify_under(game_suit: GameSuitNumber, up: Card, down: Card) -> bool {
+    let up_rank: u8 = up.rank.into();
+    let down_rank: u8 = down.rank.into();
+    if up_rank < down_rank {
+        return false;
+    }
+    if up_rank - down_rank != 1 {
+        return false;
+    }
+
+    match game_suit {
+        GameSuitNumber::One => true,
+        GameSuitNumber::Two => up.suit.color() == down.suit.color(),
+        GameSuitNumber::Four => up.suit == down.suit,
+    }
+}
+
 impl Game {
+    /// test if a game is win
+    pub fn test_win(&self) -> bool {
+        // if stock not empty,
+        // return false
+        if !self.stock.is_empty() {
+            return false;
+        }
+
+        for i in 0..10 {
+            let pile = self.tableau.get(i);
+            if pile.is_none() {
+                continue;
+            }
+            let pile = pile.unwrap();
+
+            if pile.is_empty() {
+                continue;
+            }
+
+            if pile.len() != 13 {
+                return false;
+            }
+
+            #[allow(clippy::needless_range_loop)]
+            for j in 0..13 {
+                let card = pile[j];
+                if !card.is_up {
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+
     /// undo once
     pub fn undo_once(&mut self) {
         let game_move = self.history_moves.last();
@@ -145,13 +198,6 @@ impl Game {
             return Err(MoveError::DrawEmptyStock);
         }
 
-        let current = self.stock.get_mut(self.current_stock_pos - 1);
-        if current.is_none() {
-            return Err(MoveError::DrawEmptyStock);
-        }
-        let current = current.unwrap();
-        current.pos = None;
-
         self.current_stock_pos -= 1;
 
         Ok(())
@@ -170,14 +216,6 @@ impl Game {
 
     /// undo the move card from stock to tableau
     fn undo_move_stock_to_tableau(&mut self, dst: CardPosition) -> Result<(), MoveError> {
-        // delete the pos of current stock card
-        if self.current_stock_pos != 0 {
-            let current = self.stock.get_mut(self.current_stock_pos - 1);
-            if let Some(current) = current {
-                current.pos = None;
-            }
-        }
-
         // get dst card
         if dst.pile == 0 {
             return Err(MoveError::MoveDstNotValid);
@@ -191,8 +229,7 @@ impl Game {
         if dst_card.is_none() {
             return Err(MoveError::MoveDstNotValid);
         }
-        let mut dst_card = *dst_card.unwrap();
-        dst_card.pos = None;
+        let dst_card = *dst_card.unwrap();
 
         self.stock.insert(self.current_stock_pos, dst_card);
         self.current_stock_pos += 1;
@@ -224,7 +261,6 @@ impl Game {
                 let card = self.tableau[src.pile - 1].get_mut(src.card - 1);
                 if let Some(card) = card {
                     card.is_up = !before_visible;
-                    card.pos = None;
                 }
             }
         }
@@ -320,26 +356,8 @@ impl Game {
         }
         let dst_before = *dst_before.unwrap();
 
-        let dst_before_rank: u8 = dst_before.card.rank.into();
-        let src_card_rank: u8 = src_card.card.rank.into();
-        if src_card_rank > dst_before_rank || dst_before_rank - src_card_rank != 1 {
+        if !verify_under(self.game_suit, dst_before.card, src_card.card) {
             return Err(MoveError::MoveDstNotValid);
-        }
-
-        match self.game_suit {
-            GameSuitNumber::One => {
-                // always valid do nothing
-            }
-            GameSuitNumber::Two => {
-                if src_card.card.suit.color() != dst_before.card.suit.color() {
-                    return Err(MoveError::MoveDstNotValid);
-                }
-            }
-            GameSuitNumber::Four => {
-                if src_card.card.suit != dst_before.card.suit {
-                    return Err(MoveError::MoveDstNotValid);
-                }
-            }
         }
 
         dst_pile.push(src_card);
@@ -407,27 +425,7 @@ impl Game {
         }
         let dst_before = *dst_before.unwrap();
 
-        let dst_before_rank: u8 = dst_before.card.rank.into();
-        let src_card_rank: u8 = src_card.card.rank.into();
-        if src_card_rank > dst_before_rank || dst_before_rank - src_card_rank != 1 {
-            return Err(MoveError::MoveDstNotValid);
-        }
-
-        match self.game_suit {
-            GameSuitNumber::One => {
-                // always valid do nothing
-            }
-            GameSuitNumber::Two => {
-                if src_card.card.suit.color() != dst_before.card.suit.color() {
-                    return Err(MoveError::MoveDstNotValid);
-                }
-            }
-            GameSuitNumber::Four => {
-                if src_card.card.suit != dst_before.card.suit {
-                    return Err(MoveError::MoveDstNotValid);
-                }
-            }
-        }
+        verify_under(self.game_suit, dst_before.card, src_card.card);
 
         let n = src_pile.len() - src.card;
         src_pile
@@ -459,11 +457,6 @@ impl Game {
             return Ok(());
         }
 
-        let c = self.stock.get_mut(self.current_stock_pos - 1);
-        if let Some(c) = c {
-            c.pos = None;
-        }
-
         self.current_stock_pos += 1;
 
         Ok(())
@@ -473,11 +466,6 @@ impl Game {
     fn do_move_recycle_stock(&mut self) -> Result<(), MoveError> {
         if self.current_stock_pos < self.stock.len() {
             return Err(MoveError::RecycleNoneEmptyStock);
-        }
-
-        let c = self.stock.get_mut(self.current_stock_pos - 1);
-        if let Some(c) = c {
-            c.pos = None;
         }
 
         self.current_stock_pos = 0;
@@ -547,25 +535,8 @@ impl Game {
             }
             let last_card = last_card.unwrap();
 
-            let last_card_rank: u8 = last_card.card.rank.into();
-            let src_card_rank: u8 = card.card.rank.into();
-            if src_card_rank >= last_card_rank || last_card_rank - src_card_rank != 1 {
+            if !verify_under(self.game_suit, last_card.card, card.card) {
                 continue;
-            }
-            match self.game_suit {
-                GameSuitNumber::One => {
-                    // always valid
-                }
-                GameSuitNumber::Two => {
-                    if card.card.suit.color() != last_card.card.suit.color() {
-                        continue;
-                    }
-                }
-                GameSuitNumber::Four => {
-                    if card.card.suit != last_card.card.suit {
-                        continue;
-                    }
-                }
             }
 
             return Some(GameMove::MoveCard {
@@ -787,8 +758,25 @@ impl Game {
         }
     }
 
+    /// reset all the ui pos of card before render
+    fn render_reset_ui_pos(&mut self) {
+        self.stock_ui_pos = None;
+
+        self.stock.iter_mut().for_each(|c| {
+            c.pos = None;
+        });
+
+        self.tableau.iter_mut().for_each(|pile| {
+            pile.iter_mut().for_each(|c| {
+                c.pos = None;
+            })
+        });
+    }
+
     /// Render the game ui
     fn render_all(&mut self) -> io::Result<()> {
+        self.render_reset_ui_pos();
+
         let mut terminal = TERMINAL.lock().unwrap();
 
         let mut stock_chunks = Vec::new();
@@ -1002,6 +990,14 @@ impl Game {
             match c {
                 'q' => return Ok(()),
                 'u' => self.undo_once(),
+                's' => {
+                    let _ = self.do_move(GameMove::DrawStock);
+                }
+                'w' => {
+                    if self.test_win() {
+                        return Ok(());
+                    }
+                }
                 _ => continue,
             }
         }
