@@ -72,6 +72,16 @@ pub enum GameMove {
     MoveCard {
         src: CardPosition,
         dst: CardPosition,
+        /// If is move card from tableau to tableau,
+        /// if the card before the src card is not turn up,
+        /// then after the move, this card need to be turn up.
+        /// and before_visible is set to be true,
+        ///
+        /// If the card before the src card is turn up,
+        /// then after the move, before_visible is set to false.
+        ///
+        /// Otherwise None.
+        before_visible: Option<bool>,
     },
 }
 
@@ -96,370 +106,146 @@ fn test_point_in_rect(x: u16, y: u16, rect: Rect) -> bool {
 }
 
 impl Game {
-    pub fn run_game(&mut self) -> crossterm::Result<()> {
-        loop {
-            self.render_all()?;
-
-            let event = crossterm::event::read()?;
-
-            let key = match event {
-                crossterm::event::Event::Key(c) => c,
-                crossterm::event::Event::Mouse(event) => {
-                    self.handle_click(event)?;
-                    continue;
-                }
-                _ => continue,
-            };
-
-            let c = match key.code {
-                event::KeyCode::Esc => return Ok(()),
-                event::KeyCode::Char(c) => c,
-                _ => continue,
-            };
-
-            match c {
-                'q' => return Ok(()),
-                _ => continue,
-            }
-        }
-    }
-
-    /// the function to handle crossterm click event
-    fn handle_click(&mut self, event: crossterm::event::MouseEvent) -> crossterm::Result<()> {
-        let button = match event.kind {
-            MouseEventKind::Down(button) => button,
-            _ => return Ok(()),
-        };
-
-        match button {
-            crossterm::event::MouseButton::Left => {}
-            _ => return Ok(()),
-        }
-
-        let x = event.column;
-        let y = event.row;
-
-        if test_point_in_rect(x, y, self.stock_chunks[0]) {
-            let card = self.stock.get(self.current_stock_pos - 1);
-            if card.is_none() {
-                return Ok(());
-            }
-            let card = card.unwrap();
-
-            if card.pos.is_none() {
-                return Ok(());
-            }
-
-            if !test_point_in_rect(x, y, card.pos.unwrap()) {
-                return Ok(());
-            }
-
-            let game_move = self.find_possible_move(CardPosition {
-                pile: 0,
-                card: self.current_stock_pos - 1,
-            });
-            if let Some(game_move) = game_move {
-                let _ = self.do_move(game_move);
-            }
-
-            return Ok(());
-        }
-
-        if test_point_in_rect(x, y, self.stock_ui_pos.unwrap()) {
-            if self.current_stock_pos >= self.stock.len() {
-                let _ = self.do_move(GameMove::RecycleStock);
-            } else {
-                let _ = self.do_move(GameMove::DrawStock);
-            }
-
-            return Ok(());
-        }
-
-        for i in 0..10 {
-            if test_point_in_rect(x, y, self.tableau_chunks[i]) {
-                for j in 0..self.tableau[i].len() {
-                    let c = self.tableau[i][j];
-                    if let Some(pos) = c.pos {
-                        if c.is_up && test_point_in_rect(x, y, pos) {
-                            let game_move = self.find_possible_move(CardPosition {
-                                pile: i + 1,
-                                card: j,
-                            });
-                            if let Some(game_move) = game_move {
-                                let _ = self.do_move(game_move);
-                            }
-                            return Ok(());
-                        }
-                    }
-                }
-
-                return Ok(());
-            }
-        }
-
-        Ok(())
-    }
-
-    /// find possible move for a given card
-    ///
-    /// if no, return none
-    fn find_possible_move(&self, src: CardPosition) -> Option<GameMove> {
-        let card = if src.pile == 0 {
-            self.stock.get(src.card)
-        } else {
-            let pile = self.tableau.get(src.pile - 1);
-            if let Some(pile) = pile {
-                pile.get(src.card)
-            } else {
-                return None;
-            }
-        }?;
-
-        for i in 0..10 {
-            if i + 1 == src.pile {
-                continue;
-            }
-
-            let pile = self.tableau.get(i);
-            if pile.is_none() {
-                continue;
-            }
-            let pile = pile.unwrap();
-
-            if pile.is_empty() && card.card.rank == Rank::King {
-                return Some(GameMove::MoveCard {
-                    src,
-                    dst: CardPosition {
-                        pile: i + 1,
-                        card: 0,
-                    },
-                });
-            }
-
-            let last_card = pile.last();
-            if last_card.is_none() {
-                continue;
-            }
-            let last_card = last_card.unwrap();
-
-            let last_card_rank: u8 = last_card.card.rank.into();
-            let src_card_rank: u8 = card.card.rank.into();
-            if src_card_rank >= last_card_rank || last_card_rank - src_card_rank != 1 {
-                continue;
-            }
-            match self.game_suit {
-                GameSuitNumber::One => {
-                    // always valid
-                }
-                GameSuitNumber::Two => {
-                    if card.card.suit.color() != last_card.card.suit.color() {
-                        continue;
-                    }
-                }
-                GameSuitNumber::Four => {
-                    if card.card.suit != last_card.card.suit {
-                        continue;
-                    }
-                }
-            }
-
-            return Some(GameMove::MoveCard {
-                src,
-                dst: CardPosition {
-                    pile: i + 1,
-                    card: pile.len(),
-                },
-            });
-        }
-
-        None
-    }
-
-    /// Render the game ui
-    fn render_all(&mut self) -> io::Result<()> {
-        let mut terminal = TERMINAL.lock().unwrap();
-
-        let mut stock_chunks = Vec::new();
-        let mut tableau_chunks = Vec::new();
-
-        terminal.draw(|f| {
-            let size = f.size();
-
-            let outer_block = Block::default().title("Spider").borders(Borders::ALL);
-            let new_size = outer_block.inner(size);
-            f.render_widget(outer_block, size);
-            let size = new_size;
-
-            let stock_tableau_chunks = Layout::default()
-                .direction(tui::layout::Direction::Vertical)
-                .margin(1)
-                .constraints([Constraint::Length(10), Constraint::Length(50)].as_ref())
-                .split(size);
-
-            stock_chunks = Layout::default()
-                .direction(tui::layout::Direction::Horizontal)
-                .margin(1)
-                .constraints([Constraint::Length(50), Constraint::Length(10)].as_ref())
-                .split(stock_tableau_chunks[0]);
-
-            let mut tableau_constraint = Vec::new();
-            for _ in 0..10 {
-                tableau_constraint.push(Constraint::Length(10));
-            }
-            tableau_chunks = Layout::default()
-                .direction(tui::layout::Direction::Horizontal)
-                .margin(1)
-                .constraints(tableau_constraint.as_ref())
-                .split(stock_tableau_chunks[1]);
-
-            self.render_left_stock(stock_chunks[1], f);
-            self.render_visible_stock(stock_chunks[0], f);
-            #[allow(clippy::needless_range_loop)]
-            for i in 0..10 {
-                self.render_pile(i, tableau_chunks[i], f);
-            }
-        })?;
-        drop(terminal);
-
-        self.stock_chunks = stock_chunks;
-        self.tableau_chunks = tableau_chunks;
-
-        Ok(())
-    }
-
-    fn render_pile(&mut self, pile: usize, area: Rect, f: &mut Frame<CrosstermBackend<Stdout>>) {
-        let pile = self.tableau.get_mut(pile).unwrap();
-
-        let n = pile.len();
-
-        if n == 0 {
-            let area = Rect::new(area.x, area.y, 8, 8);
-            let card_block = Block::default().title("Empty").borders(Borders::ALL);
-
-            f.render_widget(card_block, area);
-
+    /// undo once
+    pub fn undo_once(&mut self) {
+        let game_move = self.history_moves.last();
+        if game_move.is_none() {
             return;
         }
+        let game_move = *game_move.unwrap();
 
-        let mut area = Rect::new(area.x, area.y + (2 * (n - 1)) as u16, 8, 8);
-        for i in 0..n {
-            let card = n - i - 1;
-            let card = pile.get_mut(card);
-            if card.is_none() {
-                continue;
-            }
-            let card = card.unwrap();
-
-            let title = if card.is_up {
-                card.pos = Some(area);
-                card.card.to_string()
-            } else {
-                String::from("")
-            };
-
-            let mut card_block = if i == 0 {
-                Block::default().title(title).borders(Borders::ALL)
-            } else {
-                Block::default()
-                    .title(title)
-                    .borders(Borders::LEFT)
-                    .borders(Borders::RIGHT)
-                    .borders(Borders::TOP)
-            };
-
-            if card.is_up {
-                card_block = card_block.style(Style::default().fg(card.card.suit.color()));
-            }
-
-            f.render_widget(card_block, area);
-
-            if i == 0 {
-                area.height = 2;
-            }
-            area.y -= 2;
+        let res = self.undo_move(game_move);
+        if res.is_ok() {
+            self.history_moves.pop();
         }
     }
 
-    fn render_visible_stock(&mut self, area: Rect, f: &mut Frame<CrosstermBackend<Stdout>>) {
-        let mut n = self.current_stock_pos;
-        if n > 4 {
-            n = 4;
+    /// undo a move
+    fn undo_move(&mut self, game_move: GameMove) -> Result<(), MoveError> {
+        match game_move {
+            GameMove::DrawStock => self.undo_move_draw_stock(),
+            GameMove::RecycleStock => self.undo_recycle_stock(),
+            GameMove::MoveCard {
+                src,
+                dst,
+                before_visible,
+            } => {
+                if src.pile == 0 {
+                    self.undo_move_stock_to_tableau(dst)
+                } else {
+                    self.undo_move_tableau_to_tableau(src, dst, before_visible)
+                }
+            }
         }
-
-        let mut area = Rect::new(area.x + area.width - 10, area.y, 8, 8);
-
-        for i in 0..n {
-            let card = self.current_stock_pos - i - 1;
-            let card = self.stock.get_mut(card);
-            if card.is_none() {
-                continue;
-            }
-            let card = card.unwrap();
-
-            if i == 0 {
-                card.pos = Some(area);
-            }
-
-            let card_block = if i == 0 {
-                Block::default()
-                    .title(card.card.to_string())
-                    .borders(Borders::all())
-            } else {
-                Block::default()
-                    .title(card.card.to_string())
-                    .borders(Borders::TOP)
-                    .borders(Borders::BOTTOM)
-                    .borders(Borders::LEFT)
-            };
-            let card_block = card_block.style(Style::default().fg(card.card.suit.color()));
-
-            f.render_widget(card_block, area);
-
-            if i == 0 {
-                area.width = 6;
-            }
-            area.x -= 6;
-        }
-
-        let card_block = Block::default()
-            .title(format!("{}", self.current_stock_pos - n))
-            .borders(Borders::TOP)
-            .borders(Borders::BOTTOM)
-            .borders(Borders::LEFT);
-        f.render_widget(card_block, area);
     }
 
-    fn render_left_stock(&mut self, area: Rect, f: &mut Frame<CrosstermBackend<Stdout>>) {
-        let mut area = area;
-        if area.height > 8 {
-            area.height = 8;
-        }
-        if area.width > 8 {
-            area.width = 8;
+    /// undo the draw stock move
+    fn undo_move_draw_stock(&mut self) -> Result<(), MoveError> {
+        if self.current_stock_pos == 0 {
+            return Err(MoveError::DrawEmptyStock);
         }
 
-        let stock_block = Block::default().title("Stock").borders(Borders::ALL);
-        let inner = stock_block.inner(area);
-        let chunks = Layout::default()
-            .direction(tui::layout::Direction::Vertical)
-            .constraints(
-                [
-                    Constraint::Percentage(25),
-                    Constraint::Percentage(50),
-                    Constraint::Percentage(25),
-                ]
-                .as_ref(),
-            )
-            .margin(0)
-            .split(inner);
-        let left_block = Block::default()
-            .title(format!("{}", self.stock.len() - self.current_stock_pos))
-            .borders(Borders::empty());
+        let current = self.stock.get_mut(self.current_stock_pos - 1);
+        if current.is_none() {
+            return Err(MoveError::DrawEmptyStock);
+        }
+        let current = current.unwrap();
+        current.pos = None;
 
-        f.render_widget(stock_block, area);
-        f.render_widget(left_block, chunks[1]);
+        self.current_stock_pos -= 1;
 
-        self.stock_ui_pos = Some(area);
+        Ok(())
+    }
+
+    /// undo the recycle stock move
+    fn undo_recycle_stock(&mut self) -> Result<(), MoveError> {
+        if self.current_stock_pos != 0 {
+            return Err(MoveError::RecycleNoneEmptyStock);
+        }
+
+        self.current_stock_pos = self.stock.len();
+
+        Ok(())
+    }
+
+    /// undo the move card from stock to tableau
+    fn undo_move_stock_to_tableau(&mut self, dst: CardPosition) -> Result<(), MoveError> {
+        // delete the pos of current stock card
+        if self.current_stock_pos != 0 {
+            let current = self.stock.get_mut(self.current_stock_pos - 1);
+            if let Some(current) = current {
+                current.pos = None;
+            }
+        }
+
+        // get dst card
+        if dst.pile == 0 {
+            return Err(MoveError::MoveDstNotValid);
+        }
+        let dst_pile = self.tableau.get_mut(dst.pile - 1);
+        if dst_pile.is_none() {
+            return Err(MoveError::MoveDstNotValid);
+        }
+        let dst_pile = dst_pile.unwrap();
+        let dst_card = dst_pile.get(dst.card);
+        if dst_card.is_none() {
+            return Err(MoveError::MoveDstNotValid);
+        }
+        let mut dst_card = *dst_card.unwrap();
+        dst_card.pos = None;
+
+        self.stock.insert(self.current_stock_pos, dst_card);
+        self.current_stock_pos += 1;
+
+        if dst.card < dst_pile.len() {
+            let n = dst_pile.len();
+            for _ in dst.card..n {
+                dst_pile.pop();
+            }
+        }
+
+        Ok(())
+    }
+
+    /// undo move card from tableau to tableau
+    fn undo_move_tableau_to_tableau(
+        &mut self,
+        src: CardPosition,
+        dst: CardPosition,
+        before_visible: Option<bool>,
+    ) -> Result<(), MoveError> {
+        let src_pile = self.tableau.get_mut(src.pile - 1);
+        if src_pile.is_none() {
+            return Err(MoveError::MoveSrcNotExist);
+        }
+
+        if let Some(before_visible) = before_visible {
+            if src.card > 0 {
+                let card = self.tableau[src.pile - 1].get_mut(src.card - 1);
+                if let Some(card) = card {
+                    card.is_up = !before_visible;
+                    card.pos = None;
+                }
+            }
+        }
+
+        let dst_pile = self.tableau.get_mut(dst.pile - 1);
+        if dst_pile.is_none() {
+            return Err(MoveError::MoveDstNotValid);
+        }
+        let dst_pile = dst_pile.unwrap();
+
+        if dst_pile.len() <= dst.card {
+            return Err(MoveError::MoveDstNotValid);
+        }
+
+        let n = dst_pile.len() - dst.card;
+        for _ in 0..n {
+            let card = self.tableau[dst.pile - 1].remove(dst.card);
+            self.tableau[src.pile - 1].push(card);
+        }
+
+        Ok(())
     }
 
     /// do a move
@@ -467,7 +253,11 @@ impl Game {
         let res = match game_move {
             GameMove::DrawStock => self.do_move_draw_stock(),
             GameMove::RecycleStock => self.do_move_recycle_stock(),
-            GameMove::MoveCard { src, dst } => self.do_move_card(src, dst),
+            GameMove::MoveCard {
+                src,
+                dst,
+                before_visible: _,
+            } => self.do_move_card(src, dst),
         };
 
         if res.is_ok() {
@@ -695,6 +485,178 @@ impl Game {
         Ok(())
     }
 
+    /// find possible move for a given card
+    ///
+    /// if no, return none
+    fn find_possible_move(&self, src: CardPosition) -> Option<GameMove> {
+        let card = if src.pile == 0 {
+            self.stock.get(src.card)
+        } else {
+            let pile = self.tableau.get(src.pile - 1);
+            if let Some(pile) = pile {
+                pile.get(src.card)
+            } else {
+                return None;
+            }
+        }?;
+
+        let before_visible = if src.pile == 0 {
+            None
+        } else if src.card < 1 {
+            Some(false)
+        } else {
+            let pile = self.tableau.get(src.pile - 1);
+
+            if let Some(pile) = pile {
+                let card = pile.get(src.card - 1);
+                if let Some(card) = card {
+                    Some(!card.is_up)
+                } else {
+                    Some(false)
+                }
+            } else {
+                Some(false)
+            }
+        };
+
+        for i in 0..10 {
+            if i + 1 == src.pile {
+                continue;
+            }
+
+            let pile = self.tableau.get(i);
+            if pile.is_none() {
+                continue;
+            }
+            let pile = pile.unwrap();
+
+            if pile.is_empty() && card.card.rank == Rank::King {
+                return Some(GameMove::MoveCard {
+                    src,
+                    dst: CardPosition {
+                        pile: i + 1,
+                        card: 0,
+                    },
+                    before_visible,
+                });
+            }
+
+            let last_card = pile.last();
+            if last_card.is_none() {
+                continue;
+            }
+            let last_card = last_card.unwrap();
+
+            let last_card_rank: u8 = last_card.card.rank.into();
+            let src_card_rank: u8 = card.card.rank.into();
+            if src_card_rank >= last_card_rank || last_card_rank - src_card_rank != 1 {
+                continue;
+            }
+            match self.game_suit {
+                GameSuitNumber::One => {
+                    // always valid
+                }
+                GameSuitNumber::Two => {
+                    if card.card.suit.color() != last_card.card.suit.color() {
+                        continue;
+                    }
+                }
+                GameSuitNumber::Four => {
+                    if card.card.suit != last_card.card.suit {
+                        continue;
+                    }
+                }
+            }
+
+            return Some(GameMove::MoveCard {
+                src,
+                dst: CardPosition {
+                    pile: i + 1,
+                    card: pile.len(),
+                },
+                before_visible,
+            });
+        }
+
+        None
+    }
+
+    /// the function to handle crossterm click event
+    fn handle_click(&mut self, event: crossterm::event::MouseEvent) -> crossterm::Result<()> {
+        let button = match event.kind {
+            MouseEventKind::Down(button) => button,
+            _ => return Ok(()),
+        };
+
+        match button {
+            crossterm::event::MouseButton::Left => {}
+            _ => return Ok(()),
+        }
+
+        let x = event.column;
+        let y = event.row;
+
+        if test_point_in_rect(x, y, self.stock_chunks[0]) {
+            let card = self.stock.get(self.current_stock_pos - 1);
+            if card.is_none() {
+                return Ok(());
+            }
+            let card = card.unwrap();
+
+            if card.pos.is_none() {
+                return Ok(());
+            }
+
+            if !test_point_in_rect(x, y, card.pos.unwrap()) {
+                return Ok(());
+            }
+
+            let game_move = self.find_possible_move(CardPosition {
+                pile: 0,
+                card: self.current_stock_pos - 1,
+            });
+            if let Some(game_move) = game_move {
+                let _ = self.do_move(game_move);
+            }
+
+            return Ok(());
+        }
+
+        if test_point_in_rect(x, y, self.stock_ui_pos.unwrap()) {
+            if self.current_stock_pos >= self.stock.len() {
+                let _ = self.do_move(GameMove::RecycleStock);
+            } else {
+                let _ = self.do_move(GameMove::DrawStock);
+            }
+
+            return Ok(());
+        }
+
+        for i in 0..10 {
+            if test_point_in_rect(x, y, self.tableau_chunks[i]) {
+                for j in 0..self.tableau[i].len() {
+                    let c = self.tableau[i][j];
+                    if let Some(pos) = c.pos {
+                        if c.is_up && test_point_in_rect(x, y, pos) {
+                            let game_move = self.find_possible_move(CardPosition {
+                                pile: i + 1,
+                                card: j,
+                            });
+                            if let Some(game_move) = game_move {
+                                let _ = self.do_move(game_move);
+                            }
+                            return Ok(());
+                        }
+                    }
+                }
+
+                return Ok(());
+            }
+        }
+
+        Ok(())
+    }
+
     /// create a new game, with a given game suit
     pub fn new(game_suit: GameSuitNumber) -> Self {
         let mut rng = rand::thread_rng();
@@ -721,7 +683,7 @@ impl Game {
         for i in 1..14 {
             all_cards.push(GameCard {
                 card: Card {
-                    suit: Suit::Clubs,
+                    suit: Suit::Diamonds,
                     rank: Rank::from(i),
                 },
                 is_up: false,
@@ -739,7 +701,7 @@ impl Game {
         for i in 1..14 {
             all_cards.push(GameCard {
                 card: Card {
-                    suit: Suit::Clubs,
+                    suit: Suit::Hearts,
                     rank: Rank::from(i),
                 },
                 is_up: false,
@@ -757,7 +719,7 @@ impl Game {
         for i in 1..14 {
             all_cards.push(GameCard {
                 card: Card {
-                    suit: Suit::Clubs,
+                    suit: Suit::Spades,
                     rank: Rank::from(i),
                 },
                 is_up: false,
@@ -822,6 +784,226 @@ impl Game {
             stock_ui_pos: None,
             stock_chunks: Vec::new(),
             tableau_chunks: Vec::new(),
+        }
+    }
+
+    /// Render the game ui
+    fn render_all(&mut self) -> io::Result<()> {
+        let mut terminal = TERMINAL.lock().unwrap();
+
+        let mut stock_chunks = Vec::new();
+        let mut tableau_chunks = Vec::new();
+
+        terminal.draw(|f| {
+            let size = f.size();
+
+            let outer_block = Block::default().title("Spider").borders(Borders::ALL);
+            let new_size = outer_block.inner(size);
+            f.render_widget(outer_block, size);
+            let size = new_size;
+
+            let stock_tableau_chunks = Layout::default()
+                .direction(tui::layout::Direction::Vertical)
+                .margin(1)
+                .constraints([Constraint::Length(10), Constraint::Length(50)].as_ref())
+                .split(size);
+
+            stock_chunks = Layout::default()
+                .direction(tui::layout::Direction::Horizontal)
+                .margin(1)
+                .constraints([Constraint::Length(50), Constraint::Length(10)].as_ref())
+                .split(stock_tableau_chunks[0]);
+
+            let mut tableau_constraint = Vec::new();
+            for _ in 0..10 {
+                tableau_constraint.push(Constraint::Length(10));
+            }
+            tableau_chunks = Layout::default()
+                .direction(tui::layout::Direction::Horizontal)
+                .margin(1)
+                .constraints(tableau_constraint.as_ref())
+                .split(stock_tableau_chunks[1]);
+
+            self.render_left_stock(stock_chunks[1], f);
+            self.render_visible_stock(stock_chunks[0], f);
+            #[allow(clippy::needless_range_loop)]
+            for i in 0..10 {
+                self.render_pile(i, tableau_chunks[i], f);
+            }
+        })?;
+        drop(terminal);
+
+        self.stock_chunks = stock_chunks;
+        self.tableau_chunks = tableau_chunks;
+
+        Ok(())
+    }
+
+    /// render the left stock ui
+    fn render_left_stock(&mut self, area: Rect, f: &mut Frame<CrosstermBackend<Stdout>>) {
+        let mut area = area;
+        if area.height > 8 {
+            area.height = 8;
+        }
+        if area.width > 8 {
+            area.width = 8;
+        }
+
+        let stock_block = Block::default().title("Stock").borders(Borders::ALL);
+        let inner = stock_block.inner(area);
+        let chunks = Layout::default()
+            .direction(tui::layout::Direction::Vertical)
+            .constraints(
+                [
+                    Constraint::Percentage(25),
+                    Constraint::Percentage(50),
+                    Constraint::Percentage(25),
+                ]
+                .as_ref(),
+            )
+            .margin(0)
+            .split(inner);
+        let left_block = Block::default()
+            .title(format!("{}", self.stock.len() - self.current_stock_pos))
+            .borders(Borders::empty());
+
+        f.render_widget(stock_block, area);
+        f.render_widget(left_block, chunks[1]);
+
+        self.stock_ui_pos = Some(area);
+    }
+
+    /// render the tableau
+    fn render_pile(&mut self, pile: usize, area: Rect, f: &mut Frame<CrosstermBackend<Stdout>>) {
+        let pile = self.tableau.get_mut(pile).unwrap();
+
+        let n = pile.len();
+
+        if n == 0 {
+            let area = Rect::new(area.x, area.y, 8, 8);
+            let card_block = Block::default().title("Empty").borders(Borders::ALL);
+
+            f.render_widget(card_block, area);
+
+            return;
+        }
+
+        let mut area = Rect::new(area.x, area.y + (2 * (n - 1)) as u16, 8, 8);
+        for i in 0..n {
+            let card = n - i - 1;
+            let card = pile.get_mut(card);
+            if card.is_none() {
+                continue;
+            }
+            let card = card.unwrap();
+
+            let title = if card.is_up {
+                card.pos = Some(area);
+                card.card.to_string()
+            } else {
+                String::from("")
+            };
+
+            let mut card_block = if i == 0 {
+                Block::default().title(title).borders(Borders::ALL)
+            } else {
+                Block::default()
+                    .title(title)
+                    .borders(Borders::LEFT)
+                    .borders(Borders::RIGHT)
+                    .borders(Borders::TOP)
+            };
+
+            if card.is_up {
+                card_block = card_block.style(Style::default().fg(card.card.suit.color()));
+            }
+
+            f.render_widget(card_block, area);
+
+            if i == 0 {
+                area.height = 2;
+            }
+            area.y -= 2;
+        }
+    }
+
+    /// render the stock
+    fn render_visible_stock(&mut self, area: Rect, f: &mut Frame<CrosstermBackend<Stdout>>) {
+        let mut n = self.current_stock_pos;
+        if n > 4 {
+            n = 4;
+        }
+
+        let mut area = Rect::new(area.x + area.width - 10, area.y, 8, 8);
+
+        for i in 0..n {
+            let card = self.current_stock_pos - i - 1;
+            let card = self.stock.get_mut(card);
+            if card.is_none() {
+                continue;
+            }
+            let card = card.unwrap();
+
+            if i == 0 {
+                card.pos = Some(area);
+            }
+
+            let card_block = if i == 0 {
+                Block::default()
+                    .title(card.card.to_string())
+                    .borders(Borders::all())
+            } else {
+                Block::default()
+                    .title(card.card.to_string())
+                    .borders(Borders::TOP)
+                    .borders(Borders::BOTTOM)
+                    .borders(Borders::LEFT)
+            };
+            let card_block = card_block.style(Style::default().fg(card.card.suit.color()));
+
+            f.render_widget(card_block, area);
+
+            if i == 0 {
+                area.width = 6;
+            }
+            area.x -= 6;
+        }
+
+        let card_block = Block::default()
+            .title(format!("{}", self.current_stock_pos - n))
+            .borders(Borders::TOP)
+            .borders(Borders::BOTTOM)
+            .borders(Borders::LEFT);
+        f.render_widget(card_block, area);
+    }
+
+    /// run the game
+    pub fn run_game(&mut self) -> crossterm::Result<()> {
+        loop {
+            self.render_all()?;
+
+            let event = crossterm::event::read()?;
+
+            let key = match event {
+                crossterm::event::Event::Key(c) => c,
+                crossterm::event::Event::Mouse(event) => {
+                    self.handle_click(event)?;
+                    continue;
+                }
+                _ => continue,
+            };
+
+            let c = match key.code {
+                event::KeyCode::Esc => return Ok(()),
+                event::KeyCode::Char(c) => c,
+                _ => continue,
+            };
+
+            match c {
+                'q' => return Ok(()),
+                'u' => self.undo_once(),
+                _ => continue,
+            }
         }
     }
 }
