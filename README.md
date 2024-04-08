@@ -15,5 +15,5 @@ cargo run -p {{ game-name }}
 - [x] Snake
 - [ ] Tetris
 - [ ] MineSweeper
-- [ ] Spider Solitaire
+- [x] Spider Solitaire
 - [ ] Sudoku

@@ -809,7 +809,7 @@ impl Game {
             tableau_chunks = Layout::default()
                 .direction(tui::layout::Direction::Horizontal)
                 .margin(1)
-                .constraints(tableau_constraint.as_ref())
+                .constraints(tableau_constraint.clone())
                 .split(stock_tableau_chunks[1]);
 
             self.render_left_stock(stock_chunks[1], f);
